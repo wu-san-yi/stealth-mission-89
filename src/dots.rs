@@ -1,9 +1,10 @@
 //! Fullbright "dot" lights (runway lights, city lights, beacons). In classic rendering these
 //! are single pixels (zero-length lines) drawn in a solid palette colour. Here each is a quad
-//! that the palette shader expands around the dot's position to a constant size in the
+//! that the palette shader expands around the dot's position to a minimum size in the
 //! pixels of whichever view draws it (main view, XR eyes, tracking camera), drawn with the
-//! line material (solid colour, distance haze), so the lights read the same
-//! at any resolution, distance or zoom.
+//! line material (solid colour, distance haze). Modern city lights have a small, soft round
+//! footprint far away and grow with their projected size on approach or with zoom. Aircraft
+//! lamps also grow up close; other lights keep their fixed screen size.
 //!
 //! Dots are drawn in the transparent pass (`dot_materials`): as opaque geometry, which writes
 //! depth, tens of thousands of these tiny quads hang the binning pass of the Steam Frame's GPU
@@ -53,14 +54,18 @@ impl DotLight {
     }
 }
 
-/// Per-vertex palette colour of a dot batch with lamps of several colours (otherwise the
-/// material's colour).
+/// Per-vertex palette colour (low byte) and flags of a dot batch (otherwise the material's
+/// colour). Flags belong to each lamp, so city lights can share a draw with warning beacons.
 pub const ATTRIBUTE_DOT_COLOUR: MeshVertexAttribute =
     MeshVertexAttribute::new("DotColour", 0x7D07_0001, VertexFormat::Uint32);
 
-/// A dot batch whose dots have their own palette colours, drawn in the given order.
-pub fn dot_batch_coloured(points: &[Vec3], colours: &[u8]) -> Mesh {
-    let colours: Vec<u32> = colours.iter().flat_map(|&c| [c as u32; 4]).collect();
+/// Bit above the palette byte in `ATTRIBUTE_DOT_COLOUR`: a city lamp, window or red beacon.
+/// Kept separate from mesh tags (which also encode aircraft spotting sizes and light ranges).
+pub const DOT_CITY: u32 = 1 << 8;
+
+/// A dot batch whose dots have their own palette colours and flags, drawn in the given order.
+pub fn dot_batch_coloured(points: &[Vec3], colours: &[u32]) -> Mesh {
+    let colours: Vec<u32> = colours.iter().flat_map(|&c| [c; 4]).collect();
     dot_batch(points).with_inserted_attribute(ATTRIBUTE_DOT_COLOUR, colours)
 }
 

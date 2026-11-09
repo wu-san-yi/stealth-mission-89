@@ -39,6 +39,8 @@ impl Ranges {
         match tier {
             Tier::Main => self.main,
             Tier::Town => self.town,
+            // Lights stay visible at long range even when the building budget shrinks.
+            Tier::Lights => super::content::LIGHT_RANGE,
             Tier::Detail => self.detail,
             Tier::Far => self.far,
             Tier::Distant => self.distant,
@@ -51,11 +53,11 @@ impl Ranges {
 /// evenly in ratio.
 const FULL: Ranges = Ranges {
     main: 2500.0,
-    town: 7000.0,
+    town: 30_000.0,
     detail: 1000.0,
     far: 2000.0,
     distant: 4000.0,
-    fields: 24_000.0,
+    fields: 30_000.0,
     lod: 1.0,
     houses: 1.0,
 };
