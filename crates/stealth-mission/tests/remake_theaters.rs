@@ -137,3 +137,93 @@ fn the_water_grid_agrees_with_the_point_test() {
         assert!(i != 3 || wet > 0, "no water in Central Europe of {checked}");
     }
 }
+
+/// The cargo jet's missions in every theater: off a land base (never a carrier), an airdrop
+/// to friendly troops, then the delivery to a friendly airfield on land where it also lands,
+/// the pallets in the hold.
+#[test]
+fn cargo_jet_missions_drop_and_deliver() {
+    let data = data();
+    let f = world::flags::FRIENDLY;
+    let mut tested = 0;
+    for theater in 0..stealth_formats::ALL_THEATERS.len() {
+        if data.theaters.get(theater).is_none_or(|t| t.world.objects.is_empty()) {
+            continue;
+        }
+        for (seed, kind) in (0..6u16).zip([MissionKind::Strike, MissionKind::Air].into_iter().cycle()) {
+            let s = MissionSettings { theater, kind, land_bases: true, ..Default::default() };
+            let Ok(mut m) = generate(&data, &s, Seed::Srand(seed * 3001 + 7)) else { continue };
+            assert!(!m.takeoff.carrier, "theater {theater} seed {seed}: carrier takeoff");
+            airlift::for_transport(&mut m, &data);
+            let w = &m.world;
+            let (p, s2) = (&m.primary, &m.secondary);
+            let name = &m.theater_name;
+            assert_eq!(p.mission_type, airlift::AIRDROP, "{name} {seed}");
+            assert_eq!(s2.mission_type, airlift::DELIVERY, "{name} {seed}");
+            let zone = w.objects[p.object_index as usize];
+            let dest = w.objects[s2.object_index as usize];
+            assert!(zone.flags & f != 0 && zone.flags & world::flags::AIRFIELD == 0, "{name}");
+            assert!(dest.flags & f != 0 && dest.flags & world::flags::AIRFIELD != 0, "{name}");
+            assert!(dest.flags & world::flags::CARRIER == 0, "{name}: delivery to a carrier");
+            assert_eq!(m.landing.object_index, s2.object_index);
+            assert_eq!(m.loadout.usable_bays, 1);
+            assert_eq!(m.loadout.bays[0].weapon, airlift::PALLETS);
+            tested += 1;
+            // Done once.
+            let again = m.clone();
+            airlift::for_transport(&mut m, &data);
+            assert_eq!(m, again);
+        }
+    }
+    println!("{tested} cargo jet missions");
+    assert!(tested >= 20, "only {tested} missions");
+}
+
+/// About half the cargo jet's missions are routine, behind the lines (no escort, the enemy's
+/// fighters grounded), their routes far clearer of the enemy than the front-line drops, which
+/// get two escorts.
+#[test]
+fn cargo_jet_missions_are_quiet_or_escorted() {
+    let data = data();
+    let (mut quiet, mut front) = (Vec::new(), Vec::new());
+    for theater in 0..stealth_formats::ALL_THEATERS.len() {
+        if data.theaters.get(theater).is_none_or(|t| t.world.objects.is_empty()) {
+            continue;
+        }
+        for seed in 0..12u16 {
+            let kind = if seed % 2 == 0 { MissionKind::Strike } else { MissionKind::Air };
+            let s = MissionSettings { theater, kind, land_bases: true, ..Default::default() };
+            let Ok(mut m) = generate(&data, &s, Seed::Srand(seed * 3001 + 7)) else { continue };
+            airlift::for_transport(&mut m, &data);
+            let t = airlift::threats(&m);
+            let p = |b: &stealth_mission::MapPoint| (b.x, b.y);
+            let km = airlift::route_clearance(
+                &t,
+                p(&m.takeoff.position),
+                p(&m.primary.position),
+                p(&m.secondary.position),
+            ) / 64.0;
+            if m.quiet {
+                assert_eq!(m.escorts, 0);
+                quiet.push(km);
+            } else {
+                assert_eq!(m.escorts, airlift::ESCORTS);
+                front.push(km);
+            }
+        }
+    }
+    let median = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let n = (quiet.len() + front.len()) as f64;
+    let (q, f) = (median(&mut quiet), median(&mut front));
+    println!(
+        "{} quiet (median clearance {q:.0} km, least {:.0}), {} front ({f:.0} km)",
+        quiet.len(),
+        quiet[0],
+        front.len()
+    );
+    assert!((0.3..0.7).contains(&(quiet.len() as f64 / n)), "quiet share");
+    assert!(q > f + 10.0, "quiet routes {q:.0} km, front {f:.0} km");
+}

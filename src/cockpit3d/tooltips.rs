@@ -308,6 +308,7 @@ fn cmd_text(c: MfdCmd) -> String {
             Format::Fcr => "tip-cmd-fcr",
             Format::Eng => "tip-cmd-eng",
             Format::Rcs => "tip-cmd-rcs",
+            Format::Cgo => "tip-cmd-cgo",
         },
         MfdCmd::Soi(_) => "tip-cmd-soi",
         MfdCmd::SwapSoi => "tip-cmd-swap-soi",
@@ -1019,6 +1020,7 @@ mod tests {
             PanelStyle::Oh58,
             PanelStyle::Ch47,
             PanelStyle::F22,
+            PanelStyle::C5,
         ] {
             for effect in PanelLayout::for_style(style).items.iter().filter_map(|p| p.cap) {
                 let tip = control_tip(effect, &mfd, style).unwrap_or_else(|| panic!("{effect:?}"));

@@ -179,6 +179,13 @@ pub struct Sim {
     pub(crate) flights: Vec<FlightUnit>,
     /// Flight unit the escorts follow, -1 none.
     pub(crate) escort_leader: i32,
+    /// A routine flight behind the lines (`Mission::quiet`): the enemy's fighters stay down.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) quiet: bool,
+    /// An escorted airlift: how many more enemy fighters may scramble (no more than the
+    /// escort can take on), None unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scrambles_left: Option<u8>,
     pub(crate) proj: [Projectile; N_PROJ],
     pub(crate) bullets: Vec<Bullet>,
     /// Number of player gun-round slots (enemy rounds follow them).
@@ -375,6 +382,7 @@ impl Sim {
         let kiowa = opts.kiowa;
         let chinook = opts.chinook;
         let raptor = opts.raptor;
+        let galaxy = opts.galaxy;
         let mut sim = Self {
             threats: data.threats.clone(),
             aircraft_types: data.aircraft.clone(),
@@ -422,6 +430,8 @@ impl Sim {
                 kiowa,
                 chinook,
                 raptor,
+                galaxy,
+                cargo_tag: None,
                 unload: [0; 2],
                 scratch0: GroundObject::default(),
                 spi: None,
@@ -441,6 +451,7 @@ impl Sim {
                 breakup_frames: 0,
                 irj_heat: 0,
                 door_anim: 0,
+                ramp: 0,
                 bay_req: false,
                 bay_pending: false,
                 hardpoints: Vec::new(),
@@ -538,6 +549,8 @@ impl Sim {
             display_shape,
             flights,
             escort_leader: m.escort as i32,
+            quiet: m.quiet,
+            scrambles_left: (m.escorts > 0).then_some(m.escorts),
             proj: [Projectile::default(); N_PROJ],
             bullets: Vec::new(),
             n_bullets: 0,
@@ -616,6 +629,19 @@ impl Sim {
             sim.init_campaign(st, data.gun_ammo_init as i32);
         } else if sim.opts.air_defence {
             sim.place_aaa(m);
+        }
+        if sim.quiet && !sim.opts.campaign {
+            // No enemy aircraft about, only the bases' traffic.
+            for i in 0..sim.mission_flights.min(sim.flights.len()) {
+                if !sim.is_traffic(i) {
+                    sim.flights[i] = FlightUnit::default();
+                }
+            }
+            sim.escort_leader = -1;
+        }
+        if m.escorts > 0 {
+            let st = data.stores_init.map(|v| v as i32);
+            sim.launch_escorts(m.escorts, st, data.gun_ammo_init as i32);
         }
         let st = sim.start_state();
         sim.ingest(&st);
@@ -1168,6 +1194,7 @@ impl Sim {
     /// a helicopter without a turret a machine gun pod on a pylon.
     pub fn has_gun(&self) -> bool {
         !self.pl.lockheed
+            && !self.pl.galaxy
             && (!self.pl.helicopter
                 || self.pl.gunship
                 || self.pl.bays.iter().any(|b| self.gun_pod(b.0)))
@@ -1278,6 +1305,13 @@ impl Sim {
     /// Door animation 0 (closed) .. 2 (open).
     pub fn bay_door_anim(&self) -> i32 {
         self.pl.door_anim
+    }
+
+    /// The C-5's cargo ramp: 0 shut .. 1 down, and whether it is on its way down (else up or
+    /// still).
+    pub fn ramp(&self) -> (f32, bool) {
+        let down = (crate::weapons::RAMP_SECS * self.fs).max(1);
+        (self.pl.ramp as f32 / down as f32, self.pl.bay_req && self.pl.ramp < down)
     }
 
     pub fn ecm(&self) -> bool {

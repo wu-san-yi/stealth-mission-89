@@ -140,6 +140,9 @@ pub struct FlightConstants {
     pub heli: Option<heli::Rotor>,
     /// The autopilot follows the terrain (`terrain_follow`) instead of holding the altitude.
     pub terrain_following: bool,
+    /// Always flies the modern model (the classic one's speed formula has no room for a heavy's
+    /// fuel load).
+    pub modern_only: bool,
 }
 
 impl Default for FlightConstants {
@@ -161,6 +164,7 @@ impl Default for FlightConstants {
             aero: modern::Aero::F117,
             heli: None,
             terrain_following: false,
+            modern_only: false,
         }
     }
 }
@@ -256,6 +260,24 @@ impl FlightConstants {
             max_gees: 128.0,
             roll_rate: 1.5,
             aero: modern::Aero::AV8B,
+            ..default()
+        }
+    }
+
+    /// C-5 Galaxy: the modern model only; 150,000 lb of fuel (bingo 25,000) burnt by four F138s
+    /// at about 32,000 lb an hour in the cruise, 2.5 g.
+    pub fn c5() -> Self {
+        Self {
+            thrust_to_knots: 4.6,
+            max_knots: 500.0,
+            stall_knots: 125.0,
+            fuel_div: 405.0,
+            fuel: 150_000.0,
+            bingo: 25_000.0,
+            max_gees: 40.0,
+            roll_rate: 0.4,
+            aero: modern::Aero::C5,
+            modern_only: true,
             ..default()
         }
     }
@@ -524,6 +546,11 @@ impl Aircraft {
         self.heli.etl
     }
 
+    /// How far the flaps are out (0 up .. 1 fully down), as the modern model moves them.
+    pub fn flap_extension(&self) -> f32 {
+        self.modern.flap_pos()
+    }
+
     pub fn knots(&self) -> f32 {
         self.velocity / 27.0
     }
@@ -754,8 +781,10 @@ fn step_flight(
     let controls = if manning.is_some() { &parked } else { &*controls };
     // Sub-steps (at most 1/60 s classic, 1/120 s modern) keep accelerated test runs accurate.
     let total = time.delta_secs().min(1.0);
-    // A V/STOL type always flies the modern model (the classic one can't hover).
-    let classic = settings.classic_flight && k.heli.is_none() && k.aero.vtol.is_none();
+    // A V/STOL type always flies the modern model (the classic one can't hover), and so does a
+    // heavy.
+    let classic =
+        settings.classic_flight && k.heli.is_none() && k.aero.vtol.is_none() && !k.modern_only;
     let max_dt = if classic { 1.0 / 60.0 } else { 1.0 / 120.0 };
     for (mut a, mut pos, mut tf) in &mut q {
         a.auto_trim = settings.auto_trim;
@@ -1416,6 +1445,69 @@ mod tests {
         let c = fly_with(k(), true, level(airborne(1000.0, 300.0, 100.0)), 120.0, |_, _| {}).0;
         println!("A-10 classic: max speed {:.0} kt", c.knots());
         assert!((340.0..420.0).contains(&c.knots()), "classic {}", c.knots());
+    }
+
+    /// C-5 Galaxy (always the modern model): about Mach 0.8 at altitude, its cruise; a 1 g
+    /// stall near 115 kt with the flaps at its starting weight; off the ground well within the
+    /// runway at full throttle with the flaps; 2.5 g.
+    #[test]
+    fn c5_performance() {
+        let k = FlightConstants::c5;
+        assert!(!k().afterburner() && k().modern_only);
+        let heavy = |mut a: Aircraft| {
+            a.fuel = k().fuel;
+            a
+        };
+        let run = |a: Aircraft, secs: f32| fly_with(k(), false, level(heavy(a)), secs, |_, _| {}).0;
+        let a = run(airborne(30000.0, 420.0, 100.0), 400.0);
+        let mach = a.knots() / 589.0;
+        println!("C-5: max speed at 30000 ft: {:.0} kt (Mach {mach:.2})", a.knots());
+        assert!((0.76..0.88).contains(&mach), "at altitude {}", a.knots());
+        let a = run(airborne(1000.0, 300.0, 100.0), 300.0);
+        println!("C-5: max speed at 1000 ft: {:.0} kt", a.knots());
+        // Full throttle low down runs past the real one's limit speed (the model has none).
+        assert!((330.0..520.0).contains(&a.knots()), "sea level {}", a.knots());
+        let mut slow = heavy(airborne(1000.0, 200.0, 70.0));
+        let clean = run(slow.clone(), 2.0);
+        slow.flaps = true;
+        let flaps = run(slow, 6.0);
+        let (clean, flaps) = (clean.stall_speed / 27.0, flaps.stall_speed / 27.0);
+        println!("C-5: stall {clean:.0} kt clean, {flaps:.0} kt with the flaps");
+        assert!((135.0..175.0).contains(&clean), "clean {clean}");
+        assert!((100.0..130.0).contains(&flaps), "flaps {flaps}");
+        // The take-off roll: full throttle, the flaps out, the stick pulled back from `vr` knots.
+        // It must leave the ground well inside the runway: the player starts 57 map units (32 ft
+        // each in the flight model) past the runway box's centre, which ends 64 units the other
+        // side (72 on easy), so about 3,900 ft ahead; running off the end is a crash.
+        let take_off = |vr: f32, pull: f32| {
+            let kl = FlightConstants { landing: 0, ..k() };
+            let mut liftoff = None;
+            let mut x = 0.0;
+            let mut a0 = Aircraft::new_on_runway(kl.fuel);
+            a0.flaps = true;
+            fly_with(kl, false, a0, 90.0, |a, c| {
+                c.throttle = Some(1.0);
+                x += a.knots() * 1.6878 / 120.0;
+                c.pitch = if a.knots() > vr { pull } else { 0.0 };
+                if !a.on_ground && liftoff.is_none() {
+                    liftoff = Some((x, a.knots()));
+                }
+            });
+            println!("C-5: rotating at {vr} kt ({pull}): lift-off {liftoff:?} (ft, kt)");
+            liftoff.expect("the C-5 did not take off").0
+        };
+        let best = take_off(0.0, 1.0);
+        assert!(best < 2800.0, "take-off roll {best} ft");
+        // Pulling only at the 1 g stall speed.
+        let late = take_off(115.0, 1.0);
+        assert!(late < 3400.0, "take-off roll rotating late {late} ft");
+        let mut peak: f32 = 0.0;
+        fly_with(k(), false, heavy(airborne(10000.0, 330.0, 100.0)), 6.0, |a, c| {
+            c.pitch = 1.0;
+            peak = peak.max(a.gees / 16.0);
+        });
+        println!("C-5: peak load {peak:.1} g");
+        assert!((2.0..2.6).contains(&peak), "peak {peak}");
     }
 
     /// F-22A: supersonic at altitude without the afterburner, past Mach 2 with it; 9 g.
