@@ -69,7 +69,7 @@ const LEAST: Ranges = Ranges {
     far: 800.0,
     distant: 1600.0,
     fields: 10_000.0,
-    lights: 7000.0,
+    lights: 3000.0,
     lod: 0.4,
     houses: 0.3,
 };
@@ -88,8 +88,8 @@ fn interpolate(level: u8, full: Ranges) -> Ranges {
         far: mix(full.far, LEAST.far),
         distant: mix(full.distant, LEAST.distant),
         fields: mix(full.fields, LEAST.fields),
-        // City lights have their own range, independent of the building budget.
-        lights: full.lights,
+        // City lights have their own range, cut back with the towns' when the frame rate drops.
+        lights: mix(full.lights, LEAST.lights),
         lod: mix(full.lod as f64, LEAST.lod as f64) as f32,
         houses: mix(full.houses, LEAST.houses),
     }
@@ -354,9 +354,16 @@ mod tests {
                 assert!((extended.fields - LEAST.fields).abs() < 1e-6);
             }
             settings.city_light_distance = 30_000.0;
-            assert_eq!(budget.scenery_ranges(&settings), Ranges { lights: 30_000.0, ..extended });
+            let lit = budget.scenery_ranges(&settings);
+            assert_eq!(Ranges { lights: extended.lights, ..lit }, extended);
+            assert!(lit.lights >= extended.lights);
+            if level == 0 {
+                assert_eq!(lit.lights, 30_000.0);
+            } else if level == MAX {
+                assert!((lit.lights - LEAST.lights).abs() < 1e-6);
+            }
             settings.scenery_distance = 7000.0;
-            assert_eq!(budget.scenery_ranges(&settings), Ranges { lights: 30_000.0, ..base });
+            assert_eq!(budget.scenery_ranges(&settings), Ranges { lights: lit.lights, ..base });
             settings.city_light_distance = 7000.0;
         }
         settings.scenery_distance = 18_500.0;
